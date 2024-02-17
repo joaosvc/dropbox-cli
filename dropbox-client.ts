@@ -19,7 +19,9 @@ import {
   RefreshTokenResult,
   RequestOptions,
   RequestResponse,
+  DropboxDownloadAsStreamResult,
 } from "./dropbox-types";
+import { Readable } from "stream";
 
 export default class DropboxClient {
   private readonly clientId: string;
@@ -135,7 +137,7 @@ export default class DropboxClient {
   private async executeRequest(
     url: string,
     options: RequestOptions,
-    asBuffer: boolean = false
+    bufferType: "arrayBuffer" | "stream" | "json" = "json"
   ): Promise<RequestResponse> {
     let responseData: RequestResponse | null = null;
 
@@ -146,7 +148,13 @@ export default class DropboxClient {
         ok: response.ok,
         status: response.status,
         headers: response.headers.raw(),
-        data: asBuffer ? await response.arrayBuffer() : await response.json(),
+        data: response.ok
+          ? bufferType === "arrayBuffer"
+            ? await response.arrayBuffer()
+            : bufferType === "stream"
+              ? response.body
+              : await response.json()
+          : response.statusText,
       };
     } else {
       const { body, ...restOptions } = options;
@@ -286,7 +294,7 @@ export default class DropboxClient {
         headers: this.getFileHeaderOptions(path),
         responseType: "arraybuffer",
       },
-      true
+      "arrayBuffer"
     );
 
     if (!response.ok) {
@@ -302,6 +310,31 @@ export default class DropboxClient {
     );
 
     return { ...dropboxApiResponse, ...fileResponse };
+  }
+
+  public async downloadAsStream(
+    path: string
+  ): Promise<DropboxDownloadAsStreamResult> {
+    await this.validateAccessToken();
+
+    const response = await this.executeRequest(
+      `${DropboxDomains.files.content}/download`,
+      {
+        method: "POST",
+        headers: this.getFileHeaderOptions(path),
+        responseType: "stream",
+      },
+      "stream"
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to stream file");
+    }
+
+    return {
+      stream: response.data as Readable,
+      fileSize: Number(response.headers["content-length"]),
+    };
   }
 
   public async upload(
@@ -441,5 +474,24 @@ export default class DropboxClient {
     }
 
     return response.data as DropboxFileMetadata;
+  }
+
+  async getTemporaryLink(path: string) {
+    await this.validateAccessToken();
+
+    const response = await this.executeRequest(
+      `${DropboxDomains.files.file}/get_temporary_link`,
+      {
+        method: "POST",
+        headers: this.getHeaderOptions({ "Content-Type": "application/json" }),
+        body: this.JSONHeader({ path }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to get temporary link");
+    }
+
+    return response.data;
   }
 }
